@@ -1,7 +1,6 @@
 #!/usr/bin/python
 
 import os, sys, getopt, errno, shutil
-# import fnmatch # file name matching
 import re # regular expressions
 import platform
 import datetime # computing datestamp from file birthtime
@@ -65,9 +64,8 @@ def scandir( mypath, dstpath ):
 # compute datestamp
 def computeDatastamp( file, fullSourcePath ):
     datestampPat = re.compile('[0-9]{8}')
-    # if (fnmatch.fnmatch(file, datestampPat)):
+
     if datestampPat.search(file) is not None:
-        # print "Processing like a file with datestamp name."
         datestamp=file[:8]
         year=datestamp[:4]
         month=datestamp[4:6]
@@ -103,7 +101,6 @@ def movefile( source, destination ):
     try:
         print "moving", source, "to", destination
         shutil.move(source, destination)
-        # os.rename(source, destination)
     except OSError as e:
         if e.errno != errno.EEXIST:
             raise
