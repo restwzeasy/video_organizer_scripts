@@ -3,8 +3,21 @@
 import psycopg2
 import os, sys, getopt, errno
 import platform, sys, hashlib
+import datetime
 
 BUF_SIZE = 65536  # lets read stuff in 64kb chunks!
+
+
+class FileHashEntry:
+    def __init__(self, fullPath, timestamp, hash):
+        # super(FileHashEntry, self).__init__()
+        self.fullPath = fullPath
+        self.timestamp = timestamp
+        self.hash = hash
+
+    def __str__(self):
+        return self.fullPath + " | " + self.timestamp + " | " + self.hash
+
 
 def main(argv):
     sourcepath = ''
@@ -48,7 +61,10 @@ def scandir(mypath):
     for root, dirs, files in os.walk(mypath):
         for file in files:
             fullSourcePath = os.path.join(root, file)
-            createHash( fullSourcePath )
+            hash = createHash( fullSourcePath )
+            # global FileHashEntry
+            fileHashEntry = FileHashEntry(fullSourcePath, datetime.datetime.utcnow().isoformat(), hash)
+            print("file hash record: " + str(fileHashEntry))
 
 def createHash( bfile ):
     sha1 = hashlib.sha1()
@@ -60,7 +76,9 @@ def createHash( bfile ):
                 break
             sha1.update(data)
     print("file: " + bfile, "sha1: ", sha1.hexdigest())
+    return sha1.hexdigest()
 
 
 if __name__ == "__main__":
     main(sys.argv[1:])
+
