@@ -26,24 +26,30 @@ DBUSER = ''
 DBHOST = '127.0.0.1'
 conn=''
 
-def validateDbCon():
-    try:
-        cur.execute("""SELECT datname from pg_database""")
-    except Exception as e:
-        print("Unable to read from pg_database! Cause:" + e)
+# def validateDbCon():
+#     try:
+#         cur.execute("""SELECT datname from pg_database""")
+#     except Exception as e:
+#         print("Unable to read from pg_database! Cause:" + e)
 
-def getConn():
+def getDefaultConnection():
+    return getConnection(SYSDBNAME)
+
+
+def getConnection(database):
+    try:
+        con = psycopg2.connect(host=DBHOST, dbname=str(database), user=DBUSER)
+        conn = con
+        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+    except Exception as e:
+        print("Unable to connect to postgreqld db!  Cause: " + e)
+
     return conn
 
-try:
-    con = psycopg2.connect(host=DBHOST, dbname=SYSDBNAME, user=DBUSER)
-    conn = con
-    conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-except Exception as e:
-    print("Unable to connect to postgreqld db!  Cause: " + e)
-
-cur = conn.cursor()
-validateDbCon()
+#
+# getConn(SYSDBNAME)
+# cur = conn.cursor()
+# validateDbCon()
 
 
 

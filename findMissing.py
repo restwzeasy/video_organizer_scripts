@@ -1,9 +1,12 @@
 #!/usr/bin/python
 
-import psycopg2
 import os, sys, getopt, errno
 import platform, sys, hashlib
 import datetime
+import asyncio
+import psycopg2 as ps
+
+from dbutils import required as db
 
 BUF_SIZE = 65536  # lets read stuff in 64kb chunks!
 
@@ -54,19 +57,60 @@ def main(argv):
 
     print("Scanning directory", sourcepath, " and comparing vs files in", comppath)
     scandir(sourcepath)
-    scandir(comppath)
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(scandir(sourcepath))
+    loop.run_until_complete(scandir(comppath))
+    loop.close()
+
+def getDbName(mypath):
+    path = str(mypath)
+    date = str(datetime.datetime.utcnow().isoformat())
+    # return path + date
+    return mypath + datetime.datetime.utcnow().isoformat()
 
 
-def scandir(mypath):
-    for root, dirs, files in os.walk(mypath):
-        for file in files:
-            fullSourcePath = os.path.join(root, file)
-            hash = createHash( fullSourcePath )
-            # global FileHashEntry
-            fileHashEntry = FileHashEntry(fullSourcePath, datetime.datetime.utcnow().isoformat(), hash)
-            print("file hash record: " + str(fileHashEntry))
+async def initdb(dbname):
+    conn = db.getDefaultConnection()
+    cur = conn.cursor()
+    try:
+        cur.execute( "CREATE DATABASE \"%s\";" % dbname )
+    finally:
+        cur.close
+        conn.close
 
-def createHash( bfile ):
+    conn = db.getConnection(dbname)
+    cur = conn.cursor()
+    try:
+        cur.execute( "CREATE TABLE filehashes ( file varchar(256), hashtimestamp timestamp DEFAULT current_timestamp, hash varchar(128));" )
+    finally:
+        cur.close
+        conn.close
+
+
+async def scandir(mypath):
+    # conn = db.getConn()
+    # cur = conn.cursor()
+    dbname = getDbName(mypath)
+    await initdb(dbname)
+
+    conn = db.getConnection( dbname )
+    cur = conn.cursor()
+    try:
+        for root, dirs, files in os.walk(mypath):
+            for file in files:
+                fullSourcePath = os.path.join(root, file)
+                hash = await createHash( fullSourcePath )
+                fileHashEntry = FileHashEntry(fullSourcePath, datetime.datetime.utcnow().isoformat(), hash)
+                print("file hash record: " + str(fileHashEntry))
+                cur.execute("INSERT INTO filehashes (file, hash) values (%s, %s);", (fileHashEntry.fullPath, fileHashEntry.hash))
+                # cur.execute('INSERT INTO filehashes (file, hashtimestamp, hash) values (%s, %s, %s);', fileHashEntry.fullPath, fileHashEntry.timestamp, fileHashEntry.hash)
+    finally:
+        cur.close()
+        conn.close
+
+
+async def createHash( bfile ):
     sha1 = hashlib.sha1()
 
     with open(bfile, 'rb') as f:
