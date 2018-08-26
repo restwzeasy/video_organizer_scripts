@@ -46,10 +46,5 @@ def getConnection(database):
 
     return conn
 
-#
-# getConn(SYSDBNAME)
-# cur = conn.cursor()
-# validateDbCon()
-
 
 
