@@ -4,11 +4,15 @@ import os, sys, getopt, errno
 import platform, sys, hashlib
 import datetime
 import asyncio
+import multiprocessing
+from multiprocessing import Pool, TimeoutError
+import time
+import concurrent
 
 from dbutils import required as db
 
 BUF_SIZE = 65536  # lets read stuff in 64kb chunks!
-
+POOL_SIZE = 6 # concurrent number of processes to use for parallel operations
 
 class FileHashEntry:
     def __init__(self, fullPath, timestamp, hash):
@@ -67,27 +71,56 @@ def main(argv):
 
     if skipScan == True:
         print("Skipping directory scan of folders: %s and %s" % (sourcepath, comppath))
+        # in case of skipping hash creation, we need to get the dbname as input or assume the most recent db as the one to use
     else:
         print("Scanning directory", sourcepath, " and comparing vs files in", comppath)
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(scandir(sourcepath))
-        loop.run_until_complete(scandir(comppath))
-        loop.close()
+        dbname = getDbName()
+        print("Working with db: ", dbname)
+        scan(dbname, sourcepath, comppath)
 
     extractDuplicatesAndMissing( sourcepath, comppath )
 
 #######################
-# Compute the unique db name to use based on the specified path and datetime stamp.
+# Scan the source and comparison paths and create hashes for all contained files.  This is step 1 of the diff comparison
+# logic.  This step can be skipped if the paths have already been scanned and there haven't been any changes to the files
+# and folders.  If this step is skipped, only the hashes that were previously created will be considered for diff
+# analysis.
 #######################
-def getDbName(mypath):
-    return mypath + datetime.datetime.utcnow().isoformat()
+def scan(dbname, sourcepath, comppath):
+    sourceschema = getSchemaName(sourcepath)
+    compschema = getSchemaName(comppath)
+    initdb(dbname, sourceschema, compschema)
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(scandir(dbname, sourcepath, sourceschema))
+    loop.run_until_complete(scandir(dbname, comppath, comppath))
+    loop.close()
+
+#######################
+# Compute a unique db name.
+#######################
+def getDbName():
+    return "filecompare_" + datetime.datetime.utcnow().isoformat()
+
+#######################
+# Compute the unique schema name to use based on the specified path and datetime stamp.
+#######################
+def getSchemaName(mypath):
+    tPath = "path_" + mypath + datetime.datetime.utcnow().isoformat()
+    tPath = tPath.replace('.', '_')
+    tPath = tPath.replace(':', '')
+    tPath = tPath.replace('/','$')
+    tPath = tPath.replace('-', '_')
+    return tPath
 
 
 #######################
-# Create and initialize the database to use by the hash calculation and analysis functionality
+# Create and initialize the database to be used by the hash calculation and analysis functionality.
 #######################
-async def initdb(dbname):
+def initdb(dbname, sourceschema, compschema):
+    # create the unique database that we are going to use
     conn = db.getDefaultConnection()
+    print("Connected to default DB and creating database for our work.")
     cur = conn.cursor()
     try:
         cur.execute( "CREATE DATABASE \"%s\";" % dbname )
@@ -95,11 +128,16 @@ async def initdb(dbname):
         cur.close
         conn.close
 
-    # This won't work because the directory hasn't been selected yet - source vs destination.  Plus, the timestamp on the db name won't allow for skip in the future because we won't know the name of the db.  Best we can do is only use date and that limits the -x to be executed on the same date.
-    conn = db.getConnection(dbname)
+    # create the source and comparison schemas and filehashes table in each schema.
+    print("Trying to connect to db: ", dbname)
+    conn = db.getConnection( dbname )
     cur = conn.cursor()
     try:
-        cur.execute( "CREATE TABLE filehashes ( file varchar(256), hashtimestamp timestamp DEFAULT current_timestamp, hash varchar(128));" )
+        cur.execute( "CREATE SCHEMA %s;" % sourceschema )
+        cur.execute( "CREATE SCHEMA %s;" % compschema )
+
+        cur.execute( "CREATE TABLE %s.filehashes ( file varchar(256), hashtimestamp timestamp DEFAULT current_timestamp, hash varchar(128));" % sourceschema )
+        cur.execute( "CREATE TABLE %s.filehashes ( file varchar(256), hashtimestamp timestamp DEFAULT current_timestamp, hash varchar(128));" % compschema )
     finally:
         cur.close
         conn.close
@@ -108,29 +146,131 @@ async def initdb(dbname):
 #######################
 # Scan the specified folder, create hashes for all found files and insert the hash records into the working db.
 #######################
-async def scandir(mypath):
-    dbname = getDbName(mypath)
-    await initdb(dbname)
-
+async def scandir(dbname, mypath, schema):
+    print("Connecting to db: ", dbname)
     conn = db.getConnection( dbname )
     cur = conn.cursor()
+    print("Traversing %s to insert data into schema %s" % (mypath, schema))
+
+    # pool = Pool(processes=POOL_SIZE)
+    # executor = concurrent.futures.ThreadPoolExecutor(max_workers=POOL_SIZE,)
+    # event_loop = asyncio.get_event_loop()
+    # new_loop = asyncio.new_event_loop()
+
     try:
         for root, dirs, files in os.walk(mypath):
             for file in files:
-                fullSourcePath = os.path.join(root, file)
-                hash = await createHash( fullSourcePath )
-                fileHashEntry = FileHashEntry(fullSourcePath, datetime.datetime.utcnow().isoformat(), hash)
-                print("file hash record: " + str(fileHashEntry))
-                cur.execute("INSERT INTO filehashes (file, hash) values (%s, %s);", (fileHashEntry.fullPath, fileHashEntry.hash))
+                # event_loop.call_soon(__computeHashAndInsert__, cur, schema, root, file)
+                __computeHashAndInsert__(cur, schema, root, file)
+
+
+            # hash_results = [
+            #     pool.apply_async(__computeHashAndInsert__, (cur, schema, root, file))
+            #     for file in files
+            # ]
+
+
+
+        # event_loop.run_until_complete(
+        #     for root, dirs, files in os.walk(mypath):
+        #         __scanFiles_(cur, schema, root, files)
+
+            # for root, dirs, files in os.walk(mypath):
+            # # event_loop.call_soon(__computeHashAndInsert__, (cur, schema, root, file))
+            #
+            #
+            #     hash_tasks = [
+            #         asyncio.ensure_future( event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file) )
+            #         for file in files
+            #     ]
+            #     completed, pending = await asyncio.wait(hash_tasks)
+
+            # event_loop.run_until_complete(asyncio.gather(*hash_tasks))
+            # completed, pending = await asyncio.wait(hash_tasks)
+            # await __computeHashAndInsert__()
+            # event_loop.run_forever()
+        # )
+
+        # await __computeHashAndInsert__()
+
+            # for file in files:
+
+
+
+                # pool = multiprocessing.Pool(POOL_SIZE)
+                # results = pool.map_async(__computeHashAndInsert__, (cur, schema, root, file))
+
+                #     hash_tasks = [
+                #         event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file)
+                #         for file in files
+                #     ]
+                #     completed, pending = await asyncio.wait(hash_tasks)
+
+            # event_loop.run_until_complete(
+            #     for file in files:
+                    # await event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file)
+                    # event_loop.
+                # await __computeHashAndInsert__()
+
+            # )
+            # for file in files:
+            #     hash_tasks = [
+            #         event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file)
+            #         for file in files
+            #     ]
+            #     completed, pending = await asyncio.wait(hash_tasks)
+
+            # results = [t.result() for t in completed]
+
+            # for file in files:
+                # asyncio.run(__computeHashAndInsert__(cur, schema, root, file))
+                # hash_tasks = [
+                #     event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file)
+                # ]
+                # completed, pending = await asyncio.wait(hash_tasks)
+                # fullSourcePath = os.path.join(root, file)
+                # hash = createHash( fullSourcePath )
+                # fileHashEntry = FileHashEntry(fullSourcePath, datetime.datetime.utcnow().isoformat(), hash)
+                # print("file hash record: " + str(fileHashEntry))
+                # # print("about to execute: ", "INSERT INTO \"%s\".filehashes (file, hash) values (%s, %s);", (schema.strip('\''), fileHashEntry.fullPath, fileHashEntry.hash))
+                # command = "INSERT INTO %s.filehashes(file, hash) values (\'%s\', \'%s\');" % (schema, fileHashEntry.fullPath, fileHashEntry.hash)
+                # # cur.execute("INSERT INTO %s.filehashes (file, hash) values (%s, %s);", (schema, fileHashEntry.fullPath, fileHashEntry.hash))
+                # print("about to execute: ", command)
+                # cur.execute(command)
     finally:
         cur.close()
         conn.close
+        # event_loop.close()
+        # pool.close()
+        # pool.join()
+
+
+# async def __scanFiles_(cur, schema, root, files):
+#     executor = concurrent.futures.ThreadPoolExecutor(max_workers=POOL_SIZE,)
+#     event_loop = asyncio.new_event_loop()
+#     hash_tasks = [
+#         asyncio.ensure_future( event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file) )
+#         for file in files
+#     ]
+#     completed, pending = await asyncio.wait(hash_tasks)
+
+
+def __computeHashAndInsert__(cur, schema, root, file):
+    fullSourcePath = os.path.join(root, file)
+    hash = createHash( fullSourcePath )
+    fileHashEntry = FileHashEntry(fullSourcePath, datetime.datetime.utcnow().isoformat(), hash)
+    print("file hash record: " + str(fileHashEntry))
+    # print("about to execute: ", "INSERT INTO \"%s\".filehashes (file, hash) values (%s, %s);", (schema.strip('\''), fileHashEntry.fullPath, fileHashEntry.hash))
+    command = "INSERT INTO %s.filehashes(file, hash) values (\'%s\', \'%s\');" % (schema, fileHashEntry.fullPath, fileHashEntry.hash)
+    # cur.execute("INSERT INTO %s.filehashes (file, hash) values (%s, %s);", (schema, fileHashEntry.fullPath, fileHashEntry.hash))
+    print("about to execute: ", command)
+    cur.execute(command)
 
 
 #######################
 # Helper utility to create hashes of files.
 #######################
-async def createHash( bfile ):
+def createHash( bfile ):
     sha1 = hashlib.sha1()
 
     with open(bfile, 'rb') as f:
@@ -144,8 +284,9 @@ async def createHash( bfile ):
 
 
 def extractDuplicatesAndMissing( sourcepath, comppath ):
-    srcCompDbPair = identifySrcAndDestDbNames()
-    handleDuplicates( srcCompDbPair.sourceDbPath )
+    srcCompDbPair = identifySrcAndDestDbNames(sourcepath, comppath)
+    # handleDuplicates( srcCompDbPair.sourceDbPath )
+    handleMissing(srcCompDbPair)
 
 def identifySrcAndDestDbNames ( sourcepath, comppath ):
 
@@ -167,6 +308,7 @@ def identifySrcAndDestDbNames ( sourcepath, comppath ):
     compDatabases = sorted(compDatabases, reverse=True)
     srcDbPath = sourceDatabases[0]
     compDbPath = compDatabases[0]
+    print("Identified ", srcDbPath, " as the source DB path and ", compDbPath, " as the comparison DB path.")
 
     return SrcCompDatabasePair( srcDbPath, compDbPath )
 
@@ -180,8 +322,15 @@ def handleDuplicates(dbName):
         cur.close
         conn.close
 
-def handleMissing():
-
+def handleMissing(srcCompDbPair):
+    conn = db.getConnection(dbName)
+    cur = conn.cursor
+    try:
+        cur.execute("SELECT * from filehashes ")
+    finally:
+        cur.close
+        conn.close
+    return;
 
 if __name__ == "__main__":
     main(sys.argv[1:])
