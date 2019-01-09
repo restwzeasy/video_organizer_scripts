@@ -188,7 +188,9 @@ def scandir(dbname, mypath, schema):
     for root, dirs, files in os.walk(mypath):
         for file in files:
             tasks.append(asyncio.ensure_future( loop.run_in_executor(executor, __computeHashAndInsert__(dbname, schema, root, file))) )
-            # if(len(tasks) > POOL_SIZE):
+            if(len(tasks) > POOL_SIZE):
+                for i in range(1000):
+                    i = i+1
             #     time.sleep(1)
             # new_loop.call_soon(__computeHashAndInsert__, cur, schema, root, file)
             # __computeHashAndInsert__(cur, schema, root, file)
