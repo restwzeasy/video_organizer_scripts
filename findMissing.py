@@ -4,6 +4,7 @@ import os, sys, getopt, errno
 import platform, sys, hashlib
 import datetime
 import asyncio
+from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 from multiprocessing import Pool, TimeoutError
 import time
@@ -11,8 +12,12 @@ import concurrent
 
 from dbutils import required as db
 
+# db.
+# persist = Persi
 BUF_SIZE = 65536  # lets read stuff in 64kb chunks!
-POOL_SIZE = 6 # concurrent number of processes to use for parallel operations
+POOL_SIZE = 4 # concurrent number of processes to use for parallel operations
+loop = asyncio.get_event_loop()
+executor = ProcessPoolExecutor(40);
 
 class FileHashEntry:
     def __init__(self, fullPath, timestamp, hash):
@@ -91,9 +96,14 @@ def scan(dbname, sourcepath, comppath):
     compschema = getSchemaName(comppath)
     initdb(dbname, sourceschema, compschema)
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(scandir(dbname, sourcepath, sourceschema))
-    loop.run_until_complete(scandir(dbname, comppath, comppath))
+    # loop = asyncio.get_event_loop()
+    # executor = ProcessPoolExecutor(40);
+    # sourceFuture = asyncio.ensure_future( loop.run_in_executor(executor, scandir(dbname, sourcepath, sourceschema)) )
+    # compFuture = asyncio.ensure_future( loop.run_in_executor(executor, scandir(dbname, comppath, comppath)) )
+    # loop.run_until_complete(sourceFuture)
+    # loop.run_until_complete(compFuture)
+    scandir(dbname, sourcepath, sourceschema)
+    scandir(dbname, comppath, comppath)
     loop.close()
 
 #######################
@@ -146,7 +156,7 @@ def initdb(dbname, sourceschema, compschema):
 #######################
 # Scan the specified folder, create hashes for all found files and insert the hash records into the working db.
 #######################
-async def scandir(dbname, mypath, schema):
+def scandir(dbname, mypath, schema):
     print("Connecting to db: ", dbname)
     conn = db.getConnection( dbname )
     cur = conn.cursor()
@@ -154,15 +164,19 @@ async def scandir(dbname, mypath, schema):
 
     # pool = Pool(processes=POOL_SIZE)
     # executor = concurrent.futures.ThreadPoolExecutor(max_workers=POOL_SIZE,)
+    # executor = ProcessPoolExecutor(POOL_SIZE)
     # event_loop = asyncio.get_event_loop()
     # new_loop = asyncio.new_event_loop()
+
+    tasks = []
 
     try:
         for root, dirs, files in os.walk(mypath):
             for file in files:
-                # event_loop.call_soon(__computeHashAndInsert__, cur, schema, root, file)
-                __computeHashAndInsert__(cur, schema, root, file)
-
+                tasks.append(asyncio.ensure_future( loop.run_in_executor(executor, __computeHashAndInsert__(cur, schema, root, file))) )
+                # new_loop.call_soon(__computeHashAndInsert__, cur, schema, root, file)
+                # __computeHashAndInsert__(cur, schema, root, file)
+        loop.run_until_complete(asyncio.wait(tasks))
 
             # hash_results = [
             #     pool.apply_async(__computeHashAndInsert__, (cur, schema, root, file))
@@ -261,7 +275,7 @@ def __computeHashAndInsert__(cur, schema, root, file):
     fileHashEntry = FileHashEntry(fullSourcePath, datetime.datetime.utcnow().isoformat(), hash)
     print("file hash record: " + str(fileHashEntry))
     # print("about to execute: ", "INSERT INTO \"%s\".filehashes (file, hash) values (%s, %s);", (schema.strip('\''), fileHashEntry.fullPath, fileHashEntry.hash))
-    command = "INSERT INTO %s.filehashes(file, hash) values (\'%s\', \'%s\');" % (schema, fileHashEntry.fullPath, fileHashEntry.hash)
+    command = "INSERT INTO %s.filehashes(file, hash) values (\'%s\', \'%s\');" % (schema, __sanitizeFilename__(fileHashEntry.fullPath), fileHashEntry.hash)
     # cur.execute("INSERT INTO %s.filehashes (file, hash) values (%s, %s);", (schema, fileHashEntry.fullPath, fileHashEntry.hash))
     print("about to execute: ", command)
     cur.execute(command)
@@ -270,6 +284,11 @@ def __computeHashAndInsert__(cur, schema, root, file):
 #######################
 # Helper utility to create hashes of files.
 #######################
+def __sanitizeFilename__( filename ):
+    tFilename = filename
+    tFilename = tFilename.replace('\'', '')
+    return tFilename
+
 def createHash( bfile ):
     sha1 = hashlib.sha1()
 
