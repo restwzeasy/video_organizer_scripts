@@ -193,8 +193,10 @@ def scandir(dbname, mypath, schema):
 
     # try:
     for root, dirs, files in os.walk(mypath):
-        for file in files:
-            results.append(pool.apply_async(__computeHashAndInsert__(dbname, schema, root, file)))
+        with concurrent.futures.ProcessPoolExecutor(multiprocessing.cpu_count()) as executor:
+            for file in files:
+                executor.map(__computeHashAndInsert__(dbname, schema, root, file))
+            # results.append(pool.apply_async(__computeHashAndInsert__(dbname, schema, root, file)))
             # results.append(executor.map(__computeHashAndInsert__(dbname, schema, root, file)))
             # tExecutor.submit(__computeHashAndInsert__, dbname, schema, root, file)
             # tasks.append(asyncio.ensure_future( loop.run_in_executor(executor, __computeHashAndInsert__(dbname, schema, root, file))) )
@@ -205,7 +207,7 @@ def scandir(dbname, mypath, schema):
             # new_loop.call_soon(__computeHashAndInsert__, cur, schema, root, file)
             # __computeHashAndInsert__(cur, schema, root, file)
     # loop.run_until_complete(asyncio.wait(tasks))
-    loop.run_until_complete(asyncio.wait(results))
+    # loop.run_until_complete(asyncio.wait(results))
     # tExecutor.shutdown(wait=True)
 
             # hash_results = [
