@@ -24,7 +24,7 @@ from dbutils import required as db
 BUF_SIZE = 65536  # lets read stuff in 64kb chunks!
 POOL_SIZE = 50 # concurrent number of processes to use for parallel operations
 loop = asyncio.get_event_loop()
-executor = ProcessPoolExecutor(POOL_SIZE);
+executor = ProcessPoolExecutor((multiprocessing.cpu_count() - 1) * 2)
 
 class FileHashEntry:
     def __init__(self, fullPath, timestamp, hash):
@@ -101,15 +101,20 @@ def main(argv):
 def scan(dbname, sourcepath, comppath):
     sourceschema = getSchemaName(sourcepath)
     compschema = getSchemaName(comppath)
+    pool = multiprocessing.Pool(multiprocessing.cpu_count())
 
     try:
         initdb(dbname, sourceschema, compschema)
     # loop = asyncio.get_event_loop()
     # executor = ProcessPoolExecutor(40);
-        sourceFuture = asyncio.ensure_future( loop.run_in_executor(executor, scandir(dbname, sourcepath, sourceschema)) )
-        compFuture = asyncio.ensure_future( loop.run_in_executor(executor, scandir(dbname, comppath, comppath)) )
-        loop.run_until_complete(sourceFuture)
-        loop.run_until_complete(compFuture)
+        scanResults = []
+        scanResults.append(pool.apply_async(scandir(dbname, sourcepath, sourceschema)))
+        scanResults.append(pool.apply_async(scandir(dbname, comppath, compschema)))
+        loop.run_until_complete(asyncio.wait(scanResults))
+        # sourceFuture = asyncio.ensure_future( loop.run_in_executor(executor, scandir(dbname, sourcepath, sourceschema)) )
+        # compFuture = asyncio.ensure_future( loop.run_in_executor(executor, scandir(dbname, comppath, compschema)) )
+        # loop.run_until_complete(sourceFuture)
+        # loop.run_until_complete(compFuture)
     #     scandir(dbname, sourcepath, sourceschema)
     #     scandir(dbname, comppath, comppath)
     finally:
@@ -177,24 +182,31 @@ def scandir(dbname, mypath, schema):
     print("Traversing %s to insert data into schema %s" % (mypath, schema))
 
     # pool = Pool(processes=POOL_SIZE)
-    # executor = concurrent.futures.ThreadPoolExecutor(max_workers=POOL_SIZE,)
+    # tExecutor = concurrent.futures.ThreadPoolExecutor(max_workers=100)
     # executor = ProcessPoolExecutor(POOL_SIZE)
     # event_loop = asyncio.get_event_loop()
     # new_loop = asyncio.new_event_loop()
+    pool = multiprocessing.Pool(multiprocessing.cpu_count())
 
-    tasks = []
+    # tasks = []
+    results = []
 
     # try:
     for root, dirs, files in os.walk(mypath):
         for file in files:
-            tasks.append(asyncio.ensure_future( loop.run_in_executor(executor, __computeHashAndInsert__(dbname, schema, root, file))) )
-            if(len(tasks) > POOL_SIZE):
-                for i in range(1000):
-                    i = i+1
+            results.append(pool.apply_async(__computeHashAndInsert__(dbname, schema, root, file)))
+            # results.append(executor.map(__computeHashAndInsert__(dbname, schema, root, file)))
+            # tExecutor.submit(__computeHashAndInsert__, dbname, schema, root, file)
+            # tasks.append(asyncio.ensure_future( loop.run_in_executor(executor, __computeHashAndInsert__(dbname, schema, root, file))) )
+            # if(len(tasks) > POOL_SIZE):
+            #     for i in range(1000):
+            #         i = i+1
             #     time.sleep(1)
             # new_loop.call_soon(__computeHashAndInsert__, cur, schema, root, file)
             # __computeHashAndInsert__(cur, schema, root, file)
-    loop.run_until_complete(asyncio.wait(tasks))
+    # loop.run_until_complete(asyncio.wait(tasks))
+    loop.run_until_complete(asyncio.wait(results))
+    # tExecutor.shutdown(wait=True)
 
             # hash_results = [
             #     pool.apply_async(__computeHashAndInsert__, (cur, schema, root, file))
