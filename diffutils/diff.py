@@ -6,7 +6,7 @@
 
 import os
 
-from shutil import copy
+from shutil import copyfile
 from dbutils import required as db
 
 MISSING_FROM_COMP_FOLDER = "missing_from_comp"
@@ -58,8 +58,8 @@ def handleMissing(sourceSchema, compSchema):
 # Utility for copying all of the missing files from the specified result-set into the specified folder.
 #######################
 def __collectMissingFiles__( missingFiles, folderName ):
-    if not os.path.exists(folderName):
-        os.makedirs(folderName)
-
     for missingFile in missingFiles:
-        copy( missingFile[0],  folderName)
+        dst = "./" + folderName + missingFile[0]
+        if not os.path.exists(os.path.dirname(dst)):
+            os.makedirs(os.path.dirname(dst))
+        copyfile( missingFile[0],  dst)
