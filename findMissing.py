@@ -11,6 +11,7 @@ import time
 import concurrent
 
 from dbutils import required as db
+from diffutils import diff as fdiff
 
 # import psycopg2
 # from psycopg2 import pool
@@ -25,6 +26,9 @@ BUF_SIZE = 65536  # lets read stuff in 64kb chunks!
 POOL_SIZE = 50 # concurrent number of processes to use for parallel operations
 loop = asyncio.get_event_loop()
 executor = ProcessPoolExecutor((multiprocessing.cpu_count() - 1) * 2)
+
+sourceSchema=''
+compSchema=''
 
 class FileHashEntry:
     def __init__(self, fullPath, timestamp, hash):
@@ -99,18 +103,22 @@ def main(argv):
 # analysis.
 #######################
 def scan(dbname, sourcepath, comppath):
-    sourceschema = getSchemaName(sourcepath)
-    compschema = getSchemaName(comppath)
+    global sourceSchema
+    global compSchema
+
+    sourceSchema = getSchemaName(sourcepath)
+    compSchema = getSchemaName(comppath)
     pool = multiprocessing.Pool(multiprocessing.cpu_count())
 
     try:
-        initdb(dbname, sourceschema, compschema)
+        initdb(dbname, sourceSchema, compSchema)
     # loop = asyncio.get_event_loop()
     # executor = ProcessPoolExecutor(40);
         scanResults = []
-        scanResults.append(pool.apply_async(scandir(dbname, sourcepath, sourceschema)))
-        scanResults.append(pool.apply_async(scandir(dbname, comppath, compschema)))
-        loop.run_until_complete(asyncio.wait(scanResults))
+        scanResults.append(pool.apply_async(scandir(dbname, sourcepath, sourceSchema)))
+        scanResults.append(pool.apply_async(scandir(dbname, comppath, compSchema)))
+        print("end of scan - processing asynchronously")
+        # loop.run_until_complete(scanResults)
         # sourceFuture = asyncio.ensure_future( loop.run_in_executor(executor, scandir(dbname, sourcepath, sourceschema)) )
         # compFuture = asyncio.ensure_future( loop.run_in_executor(executor, scandir(dbname, comppath, compschema)) )
         # loop.run_until_complete(sourceFuture)
@@ -120,6 +128,7 @@ def scan(dbname, sourcepath, comppath):
     finally:
         db.closePool()
         loop.close()
+        print("Done scan method")
 
 #######################
 # Compute a unique db name.
@@ -196,6 +205,11 @@ def scandir(dbname, mypath, schema):
         with concurrent.futures.ProcessPoolExecutor(multiprocessing.cpu_count()) as executor:
             for file in files:
                 executor.map(__computeHashAndInsert__(dbname, schema, root, file))
+
+            #     TODO Add error handling if the process is terminated early
+
+
+
             # results.append(pool.apply_async(__computeHashAndInsert__(dbname, schema, root, file)))
             # results.append(executor.map(__computeHashAndInsert__(dbname, schema, root, file)))
             # tExecutor.submit(__computeHashAndInsert__, dbname, schema, root, file)
@@ -343,14 +357,14 @@ def createHash( bfile ):
 
 
 def extractDuplicatesAndMissing( sourcepath, comppath ):
+    print("dbname: %s and sourceSchema: %s and compSchema: %s" %(getDbName(), sourceSchema, compSchema))
     srcCompDbPair = identifySrcAndDestDbNames(sourcepath, comppath)
     # handleDuplicates( srcCompDbPair.sourceDbPath )
-    handleMissing(srcCompDbPair)
+    fdiff.handleMissing(srcCompDbPair)
 
 def identifySrcAndDestDbNames ( sourcepath, comppath ):
-
-    conn = db.getDefaultConnection()
-    cur = conn.cursor
+    conn = db.getConnection()
+    cur = conn.cursor()
     sourceDatabases=''
     compDatabases=''
     try:
@@ -373,27 +387,7 @@ def identifySrcAndDestDbNames ( sourcepath, comppath ):
     return SrcCompDatabasePair( srcDbPath, compDbPath )
 
 
-def handleDuplicates(dbName):
-    conn = db.getConnection(dbName)
-    cur = conn.cursor
-    try:
-        cur.execute("SELECT * from filehashes ")
-    finally:
-        cur.close
-        # conn.close
-        db.returnConnection(conn)
 
-def handleMissing(srcCompDbPair):
-    # conn = db.getConnection(dbName)
-    conn = db.getConnection()
-    cur = conn.cursor
-    try:
-        cur.execute("SELECT * from filehashes ")
-    finally:
-        cur.close
-        # conn.close
-        db.returnConnection(conn)
-    return;
 
 if __name__ == "__main__":
     main(sys.argv[1:])
