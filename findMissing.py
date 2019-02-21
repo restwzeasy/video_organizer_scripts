@@ -94,7 +94,7 @@ def main(argv):
         print("Working with db: ", dbname)
         scan(dbname, sourcepath, comppath)
 
-    extractDuplicatesAndMissing( sourcepath, comppath )
+    extractDuplicatesAndMissing( sourceSchema, compSchema )
 
 #######################
 # Scan the source and comparison paths and create hashes for all contained files.  This is step 1 of the diff comparison
@@ -210,111 +210,6 @@ def scandir(dbname, mypath, schema):
 
 
 
-            # results.append(pool.apply_async(__computeHashAndInsert__(dbname, schema, root, file)))
-            # results.append(executor.map(__computeHashAndInsert__(dbname, schema, root, file)))
-            # tExecutor.submit(__computeHashAndInsert__, dbname, schema, root, file)
-            # tasks.append(asyncio.ensure_future( loop.run_in_executor(executor, __computeHashAndInsert__(dbname, schema, root, file))) )
-            # if(len(tasks) > POOL_SIZE):
-            #     for i in range(1000):
-            #         i = i+1
-            #     time.sleep(1)
-            # new_loop.call_soon(__computeHashAndInsert__, cur, schema, root, file)
-            # __computeHashAndInsert__(cur, schema, root, file)
-    # loop.run_until_complete(asyncio.wait(tasks))
-    # loop.run_until_complete(asyncio.wait(results))
-    # tExecutor.shutdown(wait=True)
-
-            # hash_results = [
-            #     pool.apply_async(__computeHashAndInsert__, (cur, schema, root, file))
-            #     for file in files
-            # ]
-
-
-
-        # event_loop.run_until_complete(
-        #     for root, dirs, files in os.walk(mypath):
-        #         __scanFiles_(cur, schema, root, files)
-
-            # for root, dirs, files in os.walk(mypath):
-            # # event_loop.call_soon(__computeHashAndInsert__, (cur, schema, root, file))
-            #
-            #
-            #     hash_tasks = [
-            #         asyncio.ensure_future( event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file) )
-            #         for file in files
-            #     ]
-            #     completed, pending = await asyncio.wait(hash_tasks)
-
-            # event_loop.run_until_complete(asyncio.gather(*hash_tasks))
-            # completed, pending = await asyncio.wait(hash_tasks)
-            # await __computeHashAndInsert__()
-            # event_loop.run_forever()
-        # )
-
-        # await __computeHashAndInsert__()
-
-            # for file in files:
-
-
-
-                # pool = multiprocessing.Pool(POOL_SIZE)
-                # results = pool.map_async(__computeHashAndInsert__, (cur, schema, root, file))
-
-                #     hash_tasks = [
-                #         event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file)
-                #         for file in files
-                #     ]
-                #     completed, pending = await asyncio.wait(hash_tasks)
-
-            # event_loop.run_until_complete(
-            #     for file in files:
-                    # await event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file)
-                    # event_loop.
-                # await __computeHashAndInsert__()
-
-            # )
-            # for file in files:
-            #     hash_tasks = [
-            #         event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file)
-            #         for file in files
-            #     ]
-            #     completed, pending = await asyncio.wait(hash_tasks)
-
-            # results = [t.result() for t in completed]
-
-            # for file in files:
-                # asyncio.run(__computeHashAndInsert__(cur, schema, root, file))
-                # hash_tasks = [
-                #     event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file)
-                # ]
-                # completed, pending = await asyncio.wait(hash_tasks)
-                # fullSourcePath = os.path.join(root, file)
-                # hash = createHash( fullSourcePath )
-                # fileHashEntry = FileHashEntry(fullSourcePath, datetime.datetime.utcnow().isoformat(), hash)
-                # print("file hash record: " + str(fileHashEntry))
-                # # print("about to execute: ", "INSERT INTO \"%s\".filehashes (file, hash) values (%s, %s);", (schema.strip('\''), fileHashEntry.fullPath, fileHashEntry.hash))
-                # command = "INSERT INTO %s.filehashes(file, hash) values (\'%s\', \'%s\');" % (schema, fileHashEntry.fullPath, fileHashEntry.hash)
-                # # cur.execute("INSERT INTO %s.filehashes (file, hash) values (%s, %s);", (schema, fileHashEntry.fullPath, fileHashEntry.hash))
-                # print("about to execute: ", command)
-                # cur.execute(command)
-    # finally:
-    #     cur.close()
-    #     conn.close
-        # event_loop.close()
-        # pool.close()
-        # pool.join()
-
-
-# async def __scanFiles_(cur, schema, root, files):
-#     executor = concurrent.futures.ThreadPoolExecutor(max_workers=POOL_SIZE,)
-#     event_loop = asyncio.new_event_loop()
-#     hash_tasks = [
-#         asyncio.ensure_future( event_loop.run_in_executor(executor, __computeHashAndInsert__, cur, schema, root, file) )
-#         for file in files
-#     ]
-#     completed, pending = await asyncio.wait(hash_tasks)
-
-
 def __computeHashAndInsert__(dbname, schema, root, file):
     # conn = db.getConnection( dbname )
     conn = db.getConnection()
@@ -356,11 +251,12 @@ def createHash( bfile ):
     return sha1.hexdigest()
 
 
-def extractDuplicatesAndMissing( sourcepath, comppath ):
+def extractDuplicatesAndMissing( sourceSchema, compSchema ):
     print("dbname: %s and sourceSchema: %s and compSchema: %s" %(getDbName(), sourceSchema, compSchema))
-    srcCompDbPair = identifySrcAndDestDbNames(sourcepath, comppath)
+    srcCompDbPair = SrcCompDatabasePair(sourceSchema, compSchema)
+        # identifySrcAndDestDbNames(sourcepath, comppath)
     # handleDuplicates( srcCompDbPair.sourceDbPath )
-    fdiff.handleMissing(srcCompDbPair)
+    fdiff.handleMissing(sourceSchema, compSchema)
 
 def identifySrcAndDestDbNames ( sourcepath, comppath ):
     conn = db.getConnection()
