@@ -34,14 +34,14 @@ def handleMissing(sourceSchema, compSchema):
     cur = conn.cursor()
     try:
         # identify missing files from the comparison location
-        command = "SELECT * from %s.filehashes except select * from %s.filehashes;" %(sourceSchema, compSchema)
+        command = "SELECT * from %s.filehashes where hash in (select hash from %s.filehashes except select hash from %s.filehashes);" %(sourceSchema, sourceSchema, compSchema)
         cur.execute( command )
         missingInComp = cur.fetchall()
         # print("Missing files in comparison location: %s" % missingInComp)
         __collectMissingFiles__(missingInComp, MISSING_FROM_COMP_FOLDER)
 
         # identify missing files from the source location
-        command = "SELECT * from %s.filehashes except select * from %s.filehashes;" % (compSchema, sourceSchema)
+        command = "SELECT * from %s.filehashes where hash in (select hash from %s.filehashes except select hash from %s.filehashes);" % (compSchema, compSchema, sourceSchema)
         cur.execute(command)
         missingInSource = cur.fetchall()
         # print("Missing files in source location: %s" % missingInSource)
