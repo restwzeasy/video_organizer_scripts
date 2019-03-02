@@ -24,8 +24,10 @@ from diffutils import diff as fdiff
 # persist = Persi
 BUF_SIZE = 65536  # lets read stuff in 64kb chunks!
 POOL_SIZE = 50 # concurrent number of processes to use for parallel operations
+DB_NAME_PREFIX = "filecompare_" # prefix for the database containing the comparison hash data.  The suffix is the datetimestamp.
+
 loop = asyncio.get_event_loop()
-executor = ProcessPoolExecutor((multiprocessing.cpu_count() - 1) * 2)
+# executor = ProcessPoolExecutor((multiprocessing.cpu_count() - 1) * 2)
 
 sourceSchema=''
 compSchema=''
@@ -88,6 +90,7 @@ def main(argv):
     if skipScan == True:
         print("Skipping directory scan of folders: %s and %s" % (sourcepath, comppath))
         # in case of skipping hash creation, we need to get the dbname as input or assume the most recent db as the one to use
+        __identifySrcAndDestDbNames__(sourcepath, comppath)
     else:
         print("Scanning directory", sourcepath, " and comparing vs files in", comppath)
         dbname = getDbName()
@@ -108,16 +111,19 @@ def scan(dbname, sourcepath, comppath):
 
     sourceSchema = getSchemaName(sourcepath)
     compSchema = getSchemaName(comppath)
-    pool = multiprocessing.Pool(multiprocessing.cpu_count())
+    # pool = multiprocessing.Pool(multiprocessing.cpu_count())
 
     try:
         initdb(dbname, sourceSchema, compSchema)
     # loop = asyncio.get_event_loop()
     # executor = ProcessPoolExecutor(40);
-        scanResults = []
-        scanResults.append(pool.apply_async(scandir(dbname, sourcepath, sourceSchema)))
-        scanResults.append(pool.apply_async(scandir(dbname, comppath, compSchema)))
-        print("end of scan - processing asynchronously")
+        with concurrent.futures.ProcessPoolExecutor(2) as executor:
+            scanResults = []
+            scanResults.append(executor.map(scandir(dbname, sourcepath, sourceSchema)))
+            scanResults.append(executor.map(scandir(dbname, comppath, compSchema)))
+        # scanResults.append(pool.apply_async(scandir(dbname, sourcepath, sourceSchema)))
+        # scanResults.append(pool.apply_async(scandir(dbname, comppath, compSchema)))
+            print("end of scan - processing asynchronously")
         # loop.run_until_complete(scanResults)
         # sourceFuture = asyncio.ensure_future( loop.run_in_executor(executor, scandir(dbname, sourcepath, sourceschema)) )
         # compFuture = asyncio.ensure_future( loop.run_in_executor(executor, scandir(dbname, comppath, compschema)) )
@@ -134,7 +140,7 @@ def scan(dbname, sourcepath, comppath):
 # Compute a unique db name.
 #######################
 def getDbName():
-    return "filecompare_" + datetime.datetime.utcnow().isoformat()
+    return DB_NAME_PREFIX + datetime.datetime.utcnow().isoformat()
 
 #######################
 # Compute the unique schema name to use based on the specified path and datetime stamp.
@@ -195,16 +201,22 @@ def scandir(dbname, mypath, schema):
     # executor = ProcessPoolExecutor(POOL_SIZE)
     # event_loop = asyncio.get_event_loop()
     # new_loop = asyncio.new_event_loop()
-    pool = multiprocessing.Pool(multiprocessing.cpu_count())
+    # pool = multiprocessing.Pool(multiprocessing.cpu_count())
 
     # tasks = []
     results = []
 
     # try:
-    for root, dirs, files in os.walk(mypath):
-        with concurrent.futures.ProcessPoolExecutor(multiprocessing.cpu_count()) as executor:
+    # for root, dirs, files in os.walk(mypath):
+    #     with concurrent.futures.ProcessPoolExecutor(multiprocessing.cpu_count()) as executor:
+    #         for file in files:
+    #             executor.map(__computeHashAndInsert__(dbname, schema, root, file))
+
+    # with multiprocessing.Pool(multiprocessing.cpu_count()) as pool:
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        for root, dirs, files in os.walk(mypath):
             for file in files:
-                executor.map(__computeHashAndInsert__(dbname, schema, root, file))
+                executor.submit(__computeHashAndInsert__(dbname, schema, root, file))
 
             #     TODO Add error handling if the process is terminated early
 
@@ -253,34 +265,53 @@ def createHash( bfile ):
 
 def extractDuplicatesAndMissing( sourceSchema, compSchema ):
     print("dbname: %s and sourceSchema: %s and compSchema: %s" %(getDbName(), sourceSchema, compSchema))
-    srcCompDbPair = SrcCompDatabasePair(sourceSchema, compSchema)
-        # identifySrcAndDestDbNames(sourcepath, comppath)
-    # handleDuplicates( srcCompDbPair.sourceDbPath )
     fdiff.handleMissing(sourceSchema, compSchema)
 
-def identifySrcAndDestDbNames ( sourcepath, comppath ):
+def __identifySrcAndDestDbNames__( sourcepath, comppath ):
+    __findMostRecentDB()
+    # conn = db.getConnection()
+    # cur = conn.cursor()
+    # sourceDatabases=''
+    # compDatabases=''
+    # try:
+    #     command = "SELECT datname FROM pg_database WHERE datisTemplate = false" # and datname LIKE '%s'" %sourcepath
+    #     print("query command ---> " + command)
+    #     cur.execute(command)
+    #     sourceDatabases=cur.fetchall()
+    #
+    #     cur.execute("SELECT datname FROM pg_database WHERE datisTemplate = false and datname LIKE '%comppath'")
+    #     compDatabases=cur.fetchall()
+    # finally:
+    #     cur.close
+    #     # conn.close
+    #     db.returnConnection(conn)
+    #
+    # print("found source %s and comp %s databases." % (sourceDatabases, compDatabases))
+    #
+    # sourceDatabases = sorted(sourceDatabases, reverse=True)
+    # compDatabases = sorted(compDatabases, reverse=True)
+    # srcDbPath = sourceDatabases[0]
+    # compDbPath = compDatabases[0]
+    # print("Identified ", srcDbPath, " as the source DB path and ", compDbPath, " as the comparison DB path.")
+    #
+    # return SrcCompDatabasePair( srcDbPath, compDbPath )
+
+
+def __findMostRecentDB():
     conn = db.getConnection()
     cur = conn.cursor()
-    sourceDatabases=''
-    compDatabases=''
     try:
-        cur.execute("SELECT datname FROM pg_database WHERE datisTemplate = false and datname LIKE '%sourcepath'")
-        sourceDatabases=cur.fetchall()
-
-        cur.execute("SELECT datname FROM pg_database WHERE datisTemplate = false and datname LIKE '%comppath'")
-        compDatabases=cur.fetchall()
+        command = "SELECT datname FROM pg_database WHERE datisTemplate = false and datname LIKE '" + DB_NAME_PREFIX + "%' order by datname desc"
+        print("command --> " + command)
+        cur.execute(command)
+        latestDbName = cur.fetchall()
+        print(latestDbName)
+        # print("found latest DB " + latestDbName[0])
     finally:
         cur.close
-        # conn.close
         db.returnConnection(conn)
 
-    sourceDatabases = sorted(sourceDatabases, reverse=True)
-    compDatabases = sorted(compDatabases, reverse=True)
-    srcDbPath = sourceDatabases[0]
-    compDbPath = compDatabases[0]
-    print("Identified ", srcDbPath, " as the source DB path and ", compDbPath, " as the comparison DB path.")
-
-    return SrcCompDatabasePair( srcDbPath, compDbPath )
+    return latestDbName
 
 
 
