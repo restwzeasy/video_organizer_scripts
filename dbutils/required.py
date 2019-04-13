@@ -29,6 +29,9 @@ DBHOST = '127.0.0.1'
 # threaded_postgresql_pool=None
 threaded_postgresql_pool = psycopg2.pool.ThreadedConnectionPool(5, 10, user = DBUSER, host=DBHOST, database=str(SYSDBNAME))
 
+# value of custom DB used as flag
+customDb = ""
+
 # def validateDbCon():
 #     try:
 #         cur.execute("""SELECT datname from pg_database""")
@@ -71,11 +74,21 @@ def closePool():
 ###############
 # Method for leasing a connection from a connection pool.
 ###############
-def getConnection():
+def getConnection(database):
     global threaded_postgresql_pool
-    con = threaded_postgresql_pool.getconn()
-    con.autocommit = True
+    try:
+        if(customDb != database):
+            threaded_postgresql_pool = psycopg2.pool.ThreadedConnectionPool(5, 10, user=DBUSER, host=DBHOST,
+                                                                        database=str(database))
+
+        con = threaded_postgresql_pool.getconn()
+        con.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        con.autocommit = True
+    except Exception as e:
+        print("Unable to connect to postgreqld db!  Cause: " + e)
+
     return con
+
 
 ###############
 # Method for returning a connection to a connection pool.

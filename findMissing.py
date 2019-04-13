@@ -20,17 +20,18 @@ from diffutils import diff as fdiff
 #     threaded_postgresql_pool = psycopg2.pool.ThreadedConnectionPool(5, 20, )
 
 
-# db.
-# persist = Persi
 BUF_SIZE = 65536  # lets read stuff in 64kb chunks!
 POOL_SIZE = 50 # concurrent number of processes to use for parallel operations
 DB_NAME_PREFIX = "filecompare_" # prefix for the database containing the comparison hash data.  The suffix is the datetimestamp.
+SCHEMA_NAME_PREFIX = "path_" # prefix for schema names/paths.  THe suffix is the datetimestamp.
+PATH_SEGMENT_DELIMITER = "$" # delimiter between schema parts
 
 loop = asyncio.get_event_loop()
 # executor = ProcessPoolExecutor((multiprocessing.cpu_count() - 1) * 2)
 
 sourceSchema=''
 compSchema=''
+dbName=''
 
 class FileHashEntry:
     def __init__(self, fullPath, timestamp, hash):
@@ -48,12 +49,14 @@ class SrcCompDatabasePair:
 
 
 def main(argv):
+    global dbName
+
     sourcepath = ''
     comppath = ''
     skipScan = False
 
     if platform.system() == 'Windows':
-        print("Currently don't support Windows based systems due to file datestamp processing complexities.  Please use a Mac.")
+        print("Currently don't support Windows based systems due to file datestamp processing complexities.  Please use a Mac/Linux or a Linux based container.")
         sys.exit(2)
 
     try:
@@ -78,26 +81,28 @@ def main(argv):
         elif opt in ("-c", "-comp"):
             comppath = arg
 
-    if sourcepath == "":
-        print("Missing required parameter -s. Exiting.")
-        sys.exit(2)
-    elif comppath == "":
-        print("Missing required parameter -c. Exiting.")
-        sys.exit(2)
 
-
-
+    # Don't need source and comp location parameters for skip-scan workflow, but need to validate it for normal workflow.
     if skipScan == True:
-        print("Skipping directory scan of folders: %s and %s" % (sourcepath, comppath))
-        # in case of skipping hash creation, we need to get the dbname as input or assume the most recent db as the one to use
-        __identifySrcAndDestDbNames__(sourcepath, comppath)
+        print("Skipping directory scan.  Scanning DB for existing DB and schema.")
+        # In case of skipping hash creation, we need to get the dbname as input or assume the most recent db as the one to use.
+        # If we have an existing DB with schemas that were previously populated, evaluate the timestamps to determine
+        # source (earlier created schema) and comparison (later created schema) schemas.
+        __identifySrcAndDestSchemaNames__()
     else:
+        if sourcepath == "":
+            print("Missing required parameter -s. Exiting.")
+            sys.exit(2)
+        elif comppath == "":
+            print("Missing required parameter -c. Exiting.")
+            sys.exit(2)
+
         print("Scanning directory", sourcepath, " and comparing vs files in", comppath)
         dbname = getDbName()
         print("Working with db: ", dbname)
         scan(dbname, sourcepath, comppath)
 
-    extractDuplicatesAndMissing( sourceSchema, compSchema )
+    extractDuplicatesAndMissing(dbName, sourceSchema, compSchema )
 
 #######################
 # Scan the source and comparison paths and create hashes for all contained files.  This is step 1 of the diff comparison
@@ -110,6 +115,7 @@ def scan(dbname, sourcepath, comppath):
     global compSchema
 
     sourceSchema = getSchemaName(sourcepath)
+    time.sleep(2) # sleep for 2 seconds to allow source-path vs comp-path timestamp difference to aid identification in skip-scan workflows.  Source path must be created first.
     compSchema = getSchemaName(comppath)
     # pool = multiprocessing.Pool(multiprocessing.cpu_count())
 
@@ -146,13 +152,19 @@ def getDbName():
 # Compute the unique schema name to use based on the specified path and datetime stamp.
 #######################
 def getSchemaName(mypath):
-    tPath = "path_" + mypath + datetime.datetime.utcnow().isoformat()
+    tPath = SCHEMA_NAME_PREFIX + mypath + datetime.datetime.utcnow().isoformat()
+    return __sterilizePath__(tPath)
+
+#######################
+# Clean-up path to conform to Postgres schema naming requirements - remove invalid characters.
+#######################
+def __sterilizePath__(path):
+    tPath = path
     tPath = tPath.replace('.', '_')
     tPath = tPath.replace(':', '')
-    tPath = tPath.replace('/','$')
+    tPath = tPath.replace('/', PATH_SEGMENT_DELIMITER)
     tPath = tPath.replace('-', '_')
     return tPath
-
 
 #######################
 # Create and initialize the database to be used by the hash calculation and analysis functionality.
@@ -172,8 +184,7 @@ def initdb(dbname, sourceschema, compschema):
 
     # create the source and comparison schemas and filehashes table in each schema.
     print("Trying to connect to db: ", dbname)
-    # conn = db.__getConnection__( dbname )
-    conn = db.getConnection()
+    conn = db.__getConnection__( dbname )
     cur = conn.cursor()
     try:
         cur.execute( "CREATE SCHEMA %s;" % sourceschema )
@@ -183,8 +194,7 @@ def initdb(dbname, sourceschema, compschema):
         cur.execute( "CREATE TABLE %s.filehashes ( file varchar(256), hashtimestamp timestamp DEFAULT current_timestamp, hash varchar(128));" % compschema )
     finally:
         cur.close
-        # conn.close
-        db.returnConnection(conn)
+        conn.close
 
 
 #######################
@@ -223,8 +233,7 @@ def scandir(dbname, mypath, schema):
 
 
 def __computeHashAndInsert__(dbname, schema, root, file):
-    # conn = db.getConnection( dbname )
-    conn = db.getConnection()
+    conn = db.getConnection( dbname )
     cur = conn.cursor()
     try :
         fullSourcePath = os.path.join(root, file)
@@ -238,7 +247,6 @@ def __computeHashAndInsert__(dbname, schema, root, file):
         cur.execute(command)
     finally:
         cur.close()
-        # conn.close
         db.returnConnection(conn)
 
 
@@ -263,53 +271,60 @@ def createHash( bfile ):
     return sha1.hexdigest()
 
 
-def extractDuplicatesAndMissing( sourceSchema, compSchema ):
-    print("dbname: %s and sourceSchema: %s and compSchema: %s" %(getDbName(), sourceSchema, compSchema))
-    fdiff.handleMissing(sourceSchema, compSchema)
+def extractDuplicatesAndMissing(dbName, sourceSchema, compSchema ):
+    print("dbname: %s and sourceSchema: %s and compSchema: %s" %(dbName, sourceSchema, compSchema))
+    fdiff.handleMissing(dbName, sourceSchema, compSchema)
 
-def __identifySrcAndDestDbNames__( sourcepath, comppath ):
-    __findMostRecentDB()
-    # conn = db.getConnection()
-    # cur = conn.cursor()
-    # sourceDatabases=''
-    # compDatabases=''
-    # try:
-    #     command = "SELECT datname FROM pg_database WHERE datisTemplate = false" # and datname LIKE '%s'" %sourcepath
-    #     print("query command ---> " + command)
-    #     cur.execute(command)
-    #     sourceDatabases=cur.fetchall()
-    #
-    #     cur.execute("SELECT datname FROM pg_database WHERE datisTemplate = false and datname LIKE '%comppath'")
-    #     compDatabases=cur.fetchall()
-    # finally:
-    #     cur.close
-    #     # conn.close
-    #     db.returnConnection(conn)
-    #
-    # print("found source %s and comp %s databases." % (sourceDatabases, compDatabases))
-    #
-    # sourceDatabases = sorted(sourceDatabases, reverse=True)
-    # compDatabases = sorted(compDatabases, reverse=True)
-    # srcDbPath = sourceDatabases[0]
-    # compDbPath = compDatabases[0]
-    # print("Identified ", srcDbPath, " as the source DB path and ", compDbPath, " as the comparison DB path.")
-    #
-    # return SrcCompDatabasePair( srcDbPath, compDbPath )
+def __identifySrcAndDestSchemaNames__():
+    global sourceSchema
+    global compSchema
+    global dbName
+
+    latestDbName = ''.join(__findMostRecentDB__())
+    dbName = latestDbName
+
+    conn = db.getConnection(latestDbName)
+    cur = conn.cursor()
+    try:
+        command = "select schema_name from \"" + latestDbName + "\".information_schema.schemata where schema_name LIKE '" + SCHEMA_NAME_PREFIX + "%'"
+        print("Identifying existing schemas.  Executing: " + command)
+        cur.execute(command)
+        paths = cur.fetchall()
+        #TODO - add error checking for cases where DB existed, but no existing schema found
+    finally:
+        cur.close
+        # conn.close
+        db.returnConnection(conn)
+
+    # compare the converted path tuple into string
+    if (__getTimestamp__(''.join(paths[0])) < __getTimestamp__(''.join(paths[1]))):
+        sourceSchema = ''.join(paths[0])
+        compSchema = ''.join(paths[-1])
+    else:
+        sourceSchema = ''.join(paths[-1])
+        compSchema = ''.join(paths[0])
 
 
-def __findMostRecentDB():
-    conn = db.getConnection()
+def __getTimestamp__(path):
+    pathSegments = path.split(PATH_SEGMENT_DELIMITER)
+    dateTimeStr = pathSegments[-1]
+    timestamp = datetime.datetime.strptime(dateTimeStr, '%Y_%m_%dt%H%M%S_%f')
+    return timestamp
+
+
+def __findMostRecentDB__():
+    conn = db.getDefaultConnection()
     cur = conn.cursor()
     try:
         command = "SELECT datname FROM pg_database WHERE datisTemplate = false and datname LIKE '" + DB_NAME_PREFIX + "%' order by datname desc"
-        print("command --> " + command)
+        print("Identifying most recent DB.  Executing: " + command)
         cur.execute(command)
-        latestDbName = cur.fetchall()
+        latestDbName = cur.fetchone()
         print(latestDbName)
         # print("found latest DB " + latestDbName[0])
     finally:
         cur.close
-        db.returnConnection(conn)
+        conn.close
 
     return latestDbName
 
